@@ -1,70 +1,130 @@
 # Webhooks with Transactional Outbox Pattern
 
-This tutorial demonstrates how to implement the transactional outbox pattern for reliable webhook delivery using Go, SQLite, and sqlc.
+A demonstration of the transactional outbox pattern for reliable webhook delivery using Go, SQLite, and Convoy. This implementation shows how to ensure reliable event processing and webhook delivery even in the face of system failures.
+
+## Overview
+
+This project implements a transactional outbox pattern with two main components:
+1. An event ingestion service that generates sample invoice events
+2. A worker service that processes events and delivers them via Convoy
+
+The system uses SQLite for persistence and implements proper transaction handling to ensure no events are lost.
 
 ## Prerequisites
 
 - Go 1.21 or later
 - sqlc (https://sqlc.dev/docs/install)
 - Make
+- SQLite3
+- Convoy account and API credentials
 
 ## Project Structure
 
-- `server.go`: Main application with server and worker commands
-- `schema.sql`: Database schema and SQL queries
-- `sqlc.yaml`: sqlc configuration
-- `Makefile`: Build and development commands
+```
+.
+├── main.go           # Main application with ingest and worker commands
+├── db/
+│   ├── schema.sql    # Database schema
+│   └── queries.sql   # SQL queries for sqlc
+├── sqlc.yaml         # sqlc configuration
+├── Makefile          # Build and development commands
+└── events.db         # SQLite database (created on first run)
+```
+
+## Database Schema
+
+The application uses two main tables:
+- `events`: Stores events to be processed
+- `invoices`: Stores invoice data that triggers events
 
 ## Getting Started
 
-1. Generate the database code:
+1. Initialize the database:
+```bash
+make init-db
+```
+
+2. Generate the database code:
 ```bash
 make generate
 ```
 
-2. Build the binary:
+3. Build the binary:
 ```bash
 make build
 ```
 
-3. Run the server (in one terminal):
+4. Run the ingestion service (in one terminal):
 ```bash
-./bin/transactional-outbox server
+./bin/transactional-outbox ingest --rate 30s
 ```
 
-4. Run the worker (in another terminal):
+5. Run the worker service (in another terminal):
 ```bash
-./bin/transactional-outbox worker
+./bin/transactional-outbox worker \
+  --convoy-api-key YOUR_API_KEY \
+  --convoy-project-id YOUR_PROJECT_ID \
+  --poll-interval 5s
 ```
 
 ## Available Commands
 
-- `server`: Run in server mode to accept events via HTTP
-- `worker`: Run in worker mode to process events and send webhooks
-
-For more information about a command, use:
+### Ingest Command
 ```bash
-./bin/transactional-outbox <command> --help
+./bin/transactional-outbox ingest [flags]
+```
+Flags:
+- `--rate`: Rate at which to generate events (default: "30s")
+
+### Worker Command
+```bash
+./bin/transactional-outbox worker [flags]
+```
+Required Flags:
+- `--convoy-api-key`: Your Convoy API key
+- `--convoy-project-id`: Your Convoy project ID
+
+Optional Flags:
+- `--poll-interval`: Interval at which to poll for events (default: "5s")
+- `--convoy-base-url`: Convoy API base URL (default: "https://api.getconvoy.io")
+
+## How It Works
+
+### Event Ingestion
+- The ingest service generates sample invoice events at a configurable rate
+- Each invoice creation is wrapped in a transaction that:
+  1. Creates the invoice record
+  2. Creates a corresponding event record
+- If either operation fails, the entire transaction is rolled back
+
+### Event Processing
+- The worker continuously polls for pending events
+- When events are found, it:
+  1. Sends them to Convoy for webhook delivery
+  2. Marks them as processed in the database
+- Failed deliveries are logged but not retried (handled by Convoy)
+
+## Development
+
+To clean up and start fresh:
+```bash
+make clean
+make init-db
+make generate
+make build
 ```
 
 ## Testing
 
-Send a test event to the server:
+The ingest service automatically generates sample invoice events. You can monitor the events in the database:
+
 ```bash
-curl -X POST http://localhost:8080/events \
-  -H "Content-Type: application/json" \
-  -d '{"business_id": "bus_123", "type": "user.created", "payload": {"user_id": "123", "name": "John Doe"}}'
+sqlite3 events.db "SELECT * FROM events ORDER BY created_at DESC LIMIT 5;"
 ```
 
-The worker will pick up the event and process it, logging the webhook delivery.
+## Notes
 
-## How It Works
-
-1. The server receives events via HTTP and stores them in the SQLite database
-2. The worker continuously polls for pending events
-3. When an event is found, the worker:
-   - Processes the event (sends webhook)
-   - Marks it as processed in the database
-4. If the worker fails, the event remains in the database and will be retried
-
-This pattern ensures that no events are lost, even if the worker crashes or the webhook delivery fails. 
+- The system uses predefined business IDs for demonstration
+- Invoice events are generated with random amounts and statuses
+- Webhook delivery is handled by Convoy, which provides retry mechanisms and delivery guarantees
+- The transactional outbox pattern ensures that no events are lost, even if the worker crashes 
